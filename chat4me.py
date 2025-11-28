@@ -99,7 +99,59 @@ def extract_text_from_image(image: Image.Image) -> str:
         print(f"An error occurred during OCR: {e}")
         return ""
 
-def generate_reply(conversation_history: str) -> str:
+def learn_conversation_history(window, limit=20) -> str:
+    """
+    Scrolls up to learn the conversation history.
+    """
+    print("Learning conversation history...")
+    if not window.isActive:
+        window.activate()
+        time.sleep(0.5)
+
+    history_pages = []
+    
+    # Capture the current (bottom) view first
+    # We might want to skip this if we want strictly "past" history, 
+    # but usually "history" includes the immediate past.
+    # Let's scroll up first.
+    
+    # Scroll up a few times. 
+    # Assuming one PageUp covers ~10-20 lines depending on font size.
+    # We want ~20 messages. If messages are short, 2-3 PageUps might be enough.
+    # If messages are long, we might need more.
+    # Let's try 3 PageUps.
+    
+    for _ in range(3):
+        pyautogui.press('pageup')
+        time.sleep(0.5) # Wait for scroll animation
+        screenshot = capture_window_content(window)
+        text = extract_text_from_image(screenshot)
+        history_pages.append(text)
+        
+    # Scroll back to bottom
+    pyautogui.press('end')
+    time.sleep(0.5)
+    
+    # Combine and clean up
+    # This is a naive combination; it might have duplicates if PageUp overlaps.
+    # For a simple implementation, we'll just concatenate reversed.
+    full_history = "\n".join(reversed(history_pages))
+    
+    # Simple heuristic to limit to ~20 "messages" (blocks of text separated by newlines)
+    lines = full_history.split('\n')
+    non_empty_lines = [line for line in lines if line.strip()]
+    
+    # If we assume a message is roughly a non-empty line (or a few), 
+    # taking the last 50 non-empty lines is a safe bet for context.
+    limited_history = "\n".join(non_empty_lines[-50:])
+    
+    print(f"Learned history (last ~50 lines):")
+    print(limited_history)
+    print("--------------------------------------------------")
+    
+    return limited_history
+
+def generate_reply(conversation_history: str, learned_history: str = "") -> str:
     """
     Sends the conversation history to the Gemini API and gets a reply.
     """
@@ -111,7 +163,10 @@ def generate_reply(conversation_history: str) -> str:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-pro')
         
-        full_prompt = f"{SYSTEM_PROMPT}\n\nChat History:\n---\n{conversation_history}\n---\nYour Reply:"
+        # Combine learned history with current visible history
+        full_context = f"{learned_history}\n\n[...]\n\n{conversation_history}"
+        
+        full_prompt = f"{SYSTEM_PROMPT}\n\nChat History:\n---\n{full_context}\n---\nYour Reply:"
         
         response = model.generate_content(full_prompt)
         return response.text.strip()
@@ -154,6 +209,9 @@ def main():
     print("REMEMBER: Move your mouse to the top-left corner of the screen to stop.")
     time.sleep(5)
     
+    # Learn history before starting the loop
+    learned_history = learn_conversation_history(chat_window)
+    
     last_processed_text = ""
     
     while True:
@@ -175,7 +233,7 @@ def main():
                 
                 # 3. Generate a reply
                 print("Generating reply...")
-                reply = generate_reply(current_text)
+                reply = generate_reply(current_text, learned_history)
                 
                 if reply:
                     # 4. Send the reply
