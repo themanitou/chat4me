@@ -32,8 +32,10 @@ SYSTEM_PROMPT = """
 You are an AI assistant integrated into a chat application. 
 Your job is to read the ongoing conversation and provide helpful, relevant, and engaging responses.
 Keep your replies concise and conversational.
-The user you are acting as is the one whose messages are not visible in the history provided.
-Based on the provided chat history, generate the next message for the user.
+The user you are acting as is the one whose messages are marked with [Me].
+Other messages are from other participants and will usually be preceded by their username.
+Based on the provided chat history, generate the next message for the user ([Me]).
+Try to match the style and tone of the [Me] messages.
 """
 
 # How often to check for new messages (in seconds)
@@ -86,11 +88,74 @@ def capture_window_content(window):
 def extract_text_from_image(image: Image.Image) -> str:
     """
     Uses Tesseract OCR to extract text from a PIL Image.
+    Distinguishes between [Me] (right-aligned) and other messages.
     """
     if image is None:
         return ""
     try:
-        return pytesseract.image_to_string(image)
+        # Use image_to_data to get bounding box information
+        # output_type=Output.DICT returns a dictionary of lists
+        from pytesseract import Output
+        data = pytesseract.image_to_data(image, output_type=Output.DICT)
+        
+        image_width = image.width
+        formatted_lines = []
+        
+        # Group words into lines based on 'line_num' and 'block_num' (or just line_num)
+        # But image_to_data returns words. We need to reconstruct lines.
+        # A simpler approach for alignment is to look at the 'left' of the first word of a line.
+        
+        current_line_text = []
+        current_line_left = -1
+        last_line_num = -1
+        
+        n_boxes = len(data['level'])
+        
+        for i in range(n_boxes):
+            text = data['text'][i].strip()
+            if not text:
+                continue
+                
+            line_num = data['line_num'][i]
+            left = data['left'][i]
+            
+            if line_num != last_line_num:
+                # New line started. Process the previous line.
+                if current_line_text:
+                    full_line = " ".join(current_line_text)
+                    # Determine alignment based on the start position (left)
+                    # If it starts past the middle, it's likely right-aligned (Me)
+                    # This is a heuristic. Right-aligned text usually starts > 50% width, 
+                    # but short messages might be tricky. 
+                    # However, standard chat bubbles for "Me" usually start on the right half.
+                    # Let's use a threshold of 40% to be safe, or check if it's closer to right edge.
+                    # Actually, "Me" messages are right aligned, so their *left* bound should be large.
+                    
+                    # A better heuristic might be:
+                    # If left > image_width * 0.4 -> [Me]
+                    # Else -> Raw text
+                    
+                    if current_line_left > (image_width * 0.4):
+                        formatted_lines.append(f"[Me]: {full_line}")
+                    else:
+                        formatted_lines.append(full_line)
+                
+                current_line_text = []
+                current_line_left = left
+                last_line_num = line_num
+            
+            current_line_text.append(text)
+            
+        # Process the last line
+        if current_line_text:
+            full_line = " ".join(current_line_text)
+            if current_line_left > (image_width * 0.4):
+                formatted_lines.append(f"[Me]: {full_line}")
+            else:
+                formatted_lines.append(full_line)
+            
+        return "\n".join(formatted_lines)
+
     except pytesseract.TesseractNotFoundError:
         print("Error: Tesseract is not installed or not in your PATH.")
         print("Please install Tesseract and try again.")
@@ -196,7 +261,14 @@ def main():
     """
     The main function to run the chat automation loop.
     """
+    import argparse
+    parser = argparse.ArgumentParser(description="Chat4Me - AI Chat Automation")
+    parser.add_argument("--dry-run", action="store_true", help="Run in dry-run mode (do not send messages)")
+    args = parser.parse_args()
+
     print("--- Chat4Me Initializing ---")
+    if args.dry_run:
+        print("!!! DRY RUN MODE ENABLED - Messages will NOT be sent !!!")
     
     chat_window = select_chat_window()
     
@@ -236,15 +308,28 @@ def main():
                 reply = generate_reply(current_text, learned_history)
                 
                 if reply:
-                    # 4. Send the reply
-                    send_message(chat_window, reply)
+                    # 4. Send the reply (or print if dry-run)
+                    if args.dry_run:
+                        print(f"\n[DRY RUN] Generated Reply: {reply}\n")
+                    else:
+                        send_message(chat_window, reply)
+                        # Give time for the message to send and appear
+                        time.sleep(3)
                     
-                    # Give time for the message to send and appear
-                    time.sleep(3)
+                    # Update the baseline text
+                    # In dry-run, the screen hasn't changed, so we update last_processed_text to current_text
+                    # to avoid re-triggering on the *same* new message immediately.
+                    # However, if we don't send, the "new message" is still there.
+                    # If we update last_processed_text = current_text, next loop:
+                    # current_text (same) == last_processed_text (same) -> No new message.
+                    # This is correct. We wait for the NEXT new message (from someone else).
                     
-                    # Update the baseline text to include our own message
-                    final_image = capture_window_content(chat_window)
-                    last_processed_text = extract_text_from_image(final_image)
+                    if not args.dry_run:
+                        final_image = capture_window_content(chat_window)
+                        last_processed_text = extract_text_from_image(final_image)
+                    else:
+                        last_processed_text = current_text
+
                 else:
                     print("AI did not generate a reply.")
                     last_processed_text = current_text # Update to avoid re-processing
