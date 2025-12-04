@@ -2,16 +2,15 @@
 import time
 import os
 import pyautogui
-import pygetwindow as gw
 import pytesseract
 from PIL import Image
 import google.generativeai as genai
 
 # --- PRE-REQUISITES ---
 # 1. Install Tesseract OCR on your system:
-#    - Debian/Ubuntu: sudo apt-get install tesseract-ocr
-#    - macOS: brew install tesseract
-#    - Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
+#    - Debian/Ubuntu: sudo apt-get install tesseract-ocr tesseract-ocr-vie tesseract-ocr-fra
+#    - macOS: brew install tesseract-lang
+#    - Windows: Download language data from https://github.com/tesseract-ocr/tessdata
 #    You may need to set the command path if it's not in your system's PATH:
 #    pytesseract.pytesseract.tesseract_cmd = r'/path/to/your/tesseract'
 
@@ -39,56 +38,43 @@ Try to match the style and tone of the [Me] messages.
 """
 
 # How often to check for new messages (in seconds)
-CHECK_INTERVAL = 5
+CHECK_INTERVAL = 30
 
-def select_chat_window():
+def get_region_from_user(region_name):
     """
-    Lists all open windows and lets the user select the target chat window.
+    Asks the user to define a region by moving the mouse to the top-left and bottom-right corners.
+    Returns (x, y, width, height).
     """
-    print("Listing all open windows...")
-    windows = gw.getAllTitles()
-    if not windows:
-        print("Error: No open windows found.")
-        exit()
+    print(f"\n--- Defining {region_name} ---")
+    print(f"1. Move your mouse to the TOP-LEFT corner of the {region_name}.")
+    input("   Press Enter when ready...")
+    x1, y1 = pyautogui.position()
+    print(f"   Captured Top-Left: ({x1}, {y1})")
+    
+    print(f"2. Move your mouse to the BOTTOM-RIGHT corner of the {region_name}.")
+    input("   Press Enter when ready...")
+    x2, y2 = pyautogui.position()
+    print(f"   Captured Bottom-Right: ({x2}, {y2})")
+    
+    min_x = min(x1, x2)
+    min_y = min(y1, y2)
+    width = abs(x2 - x1)
+    height = abs(y2 - y1)
+    
+    print(f"   Defined Region: (x={min_x}, y={min_y}, w={width}, h={height})")
+    return (min_x, min_y, width, height)
 
-    for i, title in enumerate(windows):
-        if title:
-            print(f"{i}: {title}")
-
-    try:
-        window_number = int(input("Enter the number of the chat window: "))
-        if 0 <= window_number < len(windows):
-            window_title = windows[window_number]
-            print(f"Selected window: '{window_title}'")
-            return gw.getWindowsWithTitle(window_title)[0]
-        else:
-            print("Invalid number. Please run the script again.")
-            exit()
-    except (ValueError, IndexError):
-        print("Invalid input. Please run the script again.")
-        exit()
-
-def capture_window_content(window):
+def capture_screen_region(region):
     """
-    Captures a screenshot of the specified window's content area.
+    Captures a screenshot of the specified region (x, y, width, height).
     """
-    if not window.isActive:
-        try:
-            window.activate()
-        except gw.PyGetWindowException:
-            print("Could not activate the window. Please make sure it is not minimized.")
-            return None
-        time.sleep(0.5) # Give the window time to come to the foreground
-
-    # Take a screenshot of the window region
-    x, y, width, height = window.left, window.top, window.width, window.height
-    screenshot = pyautogui.screenshot(region=(x, y, width, height))
-    return screenshot
+    return pyautogui.screenshot(region=region)
 
 def extract_text_from_image(image: Image.Image) -> str:
     """
     Uses Tesseract OCR to extract text from a PIL Image.
     Distinguishes between [Me] (right-aligned) and other messages.
+    Supports English, Vietnamese, and French.
     """
     if image is None:
         return ""
@@ -96,7 +82,7 @@ def extract_text_from_image(image: Image.Image) -> str:
         # Use image_to_data to get bounding box information
         # output_type=Output.DICT returns a dictionary of lists
         from pytesseract import Output
-        data = pytesseract.image_to_data(image, output_type=Output.DICT)
+        data = pytesseract.image_to_data(image, output_type=Output.DICT, lang='eng+vie+fra')
         
         image_width = image.width
         formatted_lines = []
@@ -164,14 +150,18 @@ def extract_text_from_image(image: Image.Image) -> str:
         print(f"An error occurred during OCR: {e}")
         return ""
 
-def learn_conversation_history(window, limit=20) -> str:
+def learn_conversation_history(chat_region, limit=20) -> str:
     """
     Scrolls up to learn the conversation history.
     """
     print("Learning conversation history...")
-    if not window.isActive:
-        window.activate()
-        time.sleep(0.5)
+    
+    # Click center to focus
+    x, y, w, h = chat_region
+    center_x = x + w // 2
+    center_y = y + h // 2
+    pyautogui.click(center_x, center_y)
+    time.sleep(0.5)
 
     history_pages = []
     
@@ -186,10 +176,10 @@ def learn_conversation_history(window, limit=20) -> str:
     # If messages are long, we might need more.
     # Let's try 3 PageUps.
     
-    for _ in range(3):
+    for _ in range(20):
         pyautogui.press('pageup')
         time.sleep(0.5) # Wait for scroll animation
-        screenshot = capture_window_content(window)
+        screenshot = capture_screen_region(chat_region)
         text = extract_text_from_image(screenshot)
         history_pages.append(text)
         
@@ -226,7 +216,7 @@ def generate_reply(conversation_history: str, learned_history: str = "") -> str:
             print("Error: GEMINI_API_KEY environment variable not set.")
             exit()
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Combine learned history with current visible history
         full_context = f"{learned_history}\n\n[...]\n\n{conversation_history}"
@@ -239,19 +229,19 @@ def generate_reply(conversation_history: str, learned_history: str = "") -> str:
         print(f"Error generating reply from AI: {e}")
         return ""
 
-def send_message(window, message: str):
+def send_message(input_box_region, message: str):
     """
-    Activates the window and types the message into the chat box.
+    Clicks the input box and types the message.
     """
     print(f"Sending message: '{message}'")
     try:
-        if not window.isActive:
-            window.activate()
+        # Click center of input box
+        x, y, w, h = input_box_region
+        center_x = x + w // 2
+        center_y = y + h // 2
+        pyautogui.click(center_x, center_y)
         time.sleep(0.5)
         
-        # This part is crucial and might need adjustment.
-        # It assumes the chat input box is focused when the window is activated.
-        # For some apps, you might need to click on the input box first.
         pyautogui.write(message, interval=0.02)
         pyautogui.press('enter')
     except Exception as e:
@@ -270,28 +260,32 @@ def main():
     if args.dry_run:
         print("!!! DRY RUN MODE ENABLED - Messages will NOT be sent !!!")
     
-    chat_window = select_chat_window()
+    # Get regions from user
+    print("\nStep 1: Define the Chat Window Region (where messages appear).")
+    chat_region = get_region_from_user("Chat Window")
     
-    if not chat_window:
-        print("No window selected. Exiting.")
-        return
+    print("\nStep 2: Define the Message Input Box Region (where you type).")
+    input_box_region = get_region_from_user("Message Input Box")
 
     print("\nAutomation will start in 5 seconds.")
-    print("IMPORTANT: Make sure the chat application's text input box is selected.")
     print("REMEMBER: Move your mouse to the top-left corner of the screen to stop.")
     time.sleep(5)
     
     # Learn history before starting the loop
-    learned_history = learn_conversation_history(chat_window)
+    learned_history = learn_conversation_history(chat_region)
     
     last_processed_text = ""
     
     while True:
         try:
+            # Explicit fail-safe check
+            if pyautogui.position() == (0, 0):
+                raise pyautogui.FailSafeException("Manual fail-safe trigger")
+
             print("\nChecking for new messages...")
             
             # 1. Capture and read the current chat content
-            window_image = capture_window_content(chat_window)
+            window_image = capture_screen_region(chat_region)
             current_text = extract_text_from_image(window_image)
 
             if not current_text.strip():
@@ -312,20 +306,13 @@ def main():
                     if args.dry_run:
                         print(f"\n[DRY RUN] Generated Reply: {reply}\n")
                     else:
-                        send_message(chat_window, reply)
+                        send_message(input_box_region, reply)
                         # Give time for the message to send and appear
                         time.sleep(3)
                     
                     # Update the baseline text
-                    # In dry-run, the screen hasn't changed, so we update last_processed_text to current_text
-                    # to avoid re-triggering on the *same* new message immediately.
-                    # However, if we don't send, the "new message" is still there.
-                    # If we update last_processed_text = current_text, next loop:
-                    # current_text (same) == last_processed_text (same) -> No new message.
-                    # This is correct. We wait for the NEXT new message (from someone else).
-                    
                     if not args.dry_run:
-                        final_image = capture_window_content(chat_window)
+                        final_image = capture_screen_region(chat_region)
                         last_processed_text = extract_text_from_image(final_image)
                     else:
                         last_processed_text = current_text

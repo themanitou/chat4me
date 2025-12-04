@@ -1,5 +1,5 @@
 pyautogui
 pytesseract
 Pillow
-pygetwindow
+
 google-generativeai
