@@ -64,6 +64,18 @@ def get_region_from_user(region_name):
     print(f"   Defined Region: (x={min_x}, y={min_y}, w={width}, h={height})")
     return (min_x, min_y, width, height)
 
+def get_point_from_user(point_name):
+    """
+    Asks the user to define a point by moving the mouse to the location.
+    Returns (x, y).
+    """
+    print(f"\n--- Defining {point_name} ---")
+    print(f"1. Move your mouse to the CENTER of the {point_name}.")
+    input("   Press Enter when ready...")
+    x, y = pyautogui.position()
+    print(f"   Captured Point: ({x}, {y})")
+    return (x, y)
+
 def capture_screen_region(region):
     """
     Captures a screenshot of the specified region (x, y, width, height).
@@ -156,11 +168,11 @@ def learn_conversation_history(chat_region, limit=20) -> str:
     """
     print("Learning conversation history...")
     
-    # Click center to focus
+    # Click at bottom-right to focus
     x, y, w, h = chat_region
-    center_x = x + w // 2
-    center_y = y + h // 2
-    pyautogui.click(center_x, center_y)
+    bottom_right_x = x + w
+    bottom_right_y = y + h
+    pyautogui.click(bottom_right_x, bottom_right_y)
     time.sleep(0.5)
 
     history_pages = []
@@ -171,13 +183,12 @@ def learn_conversation_history(chat_region, limit=20) -> str:
     # Let's scroll up first.
     
     # Scroll up a few times. 
-    # Assuming one PageUp covers ~10-20 lines depending on font size.
-    # We want ~20 messages. If messages are short, 2-3 PageUps might be enough.
-    # If messages are long, we might need more.
-    # Let's try 3 PageUps.
+    # Using scroll(5) is more reliable than PageUp on some systems.
+    # We scroll multiple times to capture enough history.
+    # The loop runs 10 times to gather a good amount of context.
     
-    for _ in range(20):
-        pyautogui.press('pageup')
+    for _ in range(10):
+        pyautogui.scroll(5)
         time.sleep(0.5) # Wait for scroll animation
         screenshot = capture_screen_region(chat_region)
         text = extract_text_from_image(screenshot)
@@ -229,20 +240,37 @@ def generate_reply(conversation_history: str, learned_history: str = "") -> str:
         print(f"Error generating reply from AI: {e}")
         return ""
 
-def send_message(input_box_region, message: str):
+import pyperclip
+
+def send_message(input_box_center, message: str):
     """
-    Clicks the input box and types the message.
+    Clicks the input box and types the message using clipboard paste to support Unicode.
     """
     print(f"Sending message: '{message}'")
     try:
         # Click center of input box
-        x, y, w, h = input_box_region
-        center_x = x + w // 2
-        center_y = y + h // 2
-        pyautogui.click(center_x, center_y)
+        x, y = input_box_center
+        pyautogui.click(x, y)
         time.sleep(0.5)
         
-        pyautogui.write(message, interval=0.02)
+        # Use clipboard to handle Unicode characters (Vietnamese, French, etc.)
+        pyperclip.copy(message)
+        
+        # Paste the message
+        # Ctrl+V is standard for Linux/Windows. Command+V for macOS.
+        # Detecting OS for safety, though Ctrl+V often works on Linux/Windows.
+        if os.name == 'posix': # macOS or Linux
+             # Check if it's macOS (Darwin)
+             if os.uname().sysname == 'Darwin':
+                 pyautogui.hotkey('command', 'v')
+             else:
+                 pyautogui.hotkey('ctrl', 'v')
+        else:
+            pyautogui.hotkey('ctrl', 'v')
+
+        time.sleep(0.3) # Wait for paste
+        pyautogui.press('enter')
+        time.sleep(0.3) # Wait to press enter again since the first one may not go through
         pyautogui.press('enter')
     except Exception as e:
         print(f"Failed to send message: {e}")
@@ -260,24 +288,24 @@ def main():
     if args.dry_run:
         print("!!! DRY RUN MODE ENABLED - Messages will NOT be sent !!!")
     
-    # Get regions from user
-    print("\nStep 1: Define the Chat Window Region (where messages appear).")
-    chat_region = get_region_from_user("Chat Window")
-    
-    print("\nStep 2: Define the Message Input Box Region (where you type).")
-    input_box_region = get_region_from_user("Message Input Box")
+    try:
+        # Get regions from user
+        print("\nStep 1: Define the Chat Window Region (where messages appear).")
+        chat_region = get_region_from_user("Chat Window")
+        
+        print("\nStep 2: Define the Message Input Box Center (where you type).")
+        input_box_center = get_point_from_user("Message Input Box")
 
-    print("\nAutomation will start in 5 seconds.")
-    print("REMEMBER: Move your mouse to the top-left corner of the screen to stop.")
-    time.sleep(5)
-    
-    # Learn history before starting the loop
-    learned_history = learn_conversation_history(chat_region)
-    
-    last_processed_text = ""
-    
-    while True:
-        try:
+        print("\nAutomation will start in 5 seconds.")
+        print("REMEMBER: Move your mouse to the top-left corner of the screen to stop.")
+        time.sleep(5)
+        
+        # Learn history before starting the loop
+        learned_history = learn_conversation_history(chat_region)
+        
+        last_processed_text = ""
+        
+        while True:
             # Explicit fail-safe check
             if pyautogui.position() == (0, 0):
                 raise pyautogui.FailSafeException("Manual fail-safe trigger")
@@ -306,7 +334,7 @@ def main():
                     if args.dry_run:
                         print(f"\n[DRY RUN] Generated Reply: {reply}\n")
                     else:
-                        send_message(input_box_region, reply)
+                        send_message(input_box_center, reply)
                         # Give time for the message to send and appear
                         time.sleep(3)
                     
@@ -333,15 +361,13 @@ def main():
             # Wait before the next check
             time.sleep(CHECK_INTERVAL)
             
-        except pyautogui.FailSafeException:
-            print("\nFailsafe activated. Exiting program.")
-            break
-        except KeyboardInterrupt:
-            print("\nProgram interrupted by user. Exiting.")
-            break
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            time.sleep(10) # Wait a bit longer after an error
+    except pyautogui.FailSafeException:
+        print("\nFailsafe activated. Exiting program.")
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user. Exiting.")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        time.sleep(10) # Wait a bit longer after an error
 
 if __name__ == "__main__":
     main()

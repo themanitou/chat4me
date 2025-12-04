@@ -2,4 +2,5 @@ pyautogui
 pytesseract
 Pillow
 
+pyperclip
 google-generativeai
