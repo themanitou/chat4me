@@ -5,6 +5,7 @@ import pyautogui
 import pytesseract
 from PIL import Image
 import google.generativeai as genai
+import datetime
 
 # --- PRE-REQUISITES ---
 # 1. Install Tesseract OCR on your system:
@@ -165,9 +166,14 @@ def extract_text_from_image(image: Image.Image) -> str:
 def learn_conversation_history(chat_region, limit=20) -> str:
     """
     Scrolls up to learn the conversation history.
+    And stitches screenshots into a single image saved in 'logs/'.
     """
     print("Learning conversation history...")
     
+    # Ensure logs directory exists
+    if not os.path.exists("logs"):
+        os.makedirs("logs")
+
     # Click at bottom-right to focus
     x, y, w, h = chat_region
     bottom_right_x = x + w
@@ -175,40 +181,57 @@ def learn_conversation_history(chat_region, limit=20) -> str:
     pyautogui.click(bottom_right_x, bottom_right_y)
     time.sleep(0.5)
 
-    history_pages = []
+    history_pages_text = []
+    history_pages_images = []
     
-    # Capture the current (bottom) view first
-    # We might want to skip this if we want strictly "past" history, 
-    # but usually "history" includes the immediate past.
-    # Let's scroll up first.
-    
-    # Scroll up a few times. 
-    # Using scroll(5) is more reliable than PageUp on some systems.
+    # Using scroll(h) is more reliable than PageUp on some systems.
     # We scroll multiple times to capture enough history.
     # The loop runs 10 times to gather a good amount of context.
     
     for _ in range(10):
-        pyautogui.scroll(5)
+        pyautogui.scroll(h)
         time.sleep(0.5) # Wait for scroll animation
         screenshot = capture_screen_region(chat_region)
+        
+        # Save text
         text = extract_text_from_image(screenshot)
-        history_pages.append(text)
+        history_pages_text.append(text)
+        
+        # Save image object
+        history_pages_images.append(screenshot)
         
     # Scroll back to bottom
     pyautogui.press('end')
     time.sleep(0.5)
     
-    # Combine and clean up
-    # This is a naive combination; it might have duplicates if PageUp overlaps.
-    # For a simple implementation, we'll just concatenate reversed.
-    full_history = "\n".join(reversed(history_pages))
+    # --- Stitch Images ---
+    if history_pages_images:
+        # The first element in history_pages_images was captured after 1 scroll up.
+        # The last element was captured after 10 scrolls up (oldest).
+        # We want the final image to be from Top (Oldest) to Bottom (Newest).
+        # So we reverse the list.
+        ordered_images = list(reversed(history_pages_images))
+        
+        total_height = sum(img.height for img in ordered_images)
+        max_width = max(img.width for img in ordered_images)
+        
+        stitched_image = Image.new('RGB', (max_width, total_height))
+        
+        y_offset = 0
+        for img in ordered_images:
+            stitched_image.paste(img, (0, y_offset))
+            y_offset += img.height
+            
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"logs/history_{timestamp}.png"
+        stitched_image.save(filename)
+        print(f"Saved stitched history to {filename}")
+
+    # --- Process Text ---
+    full_history = "\n".join(reversed(history_pages_text))
     
-    # Simple heuristic to limit to ~20 "messages" (blocks of text separated by newlines)
     lines = full_history.split('\n')
     non_empty_lines = [line for line in lines if line.strip()]
-    
-    # If we assume a message is roughly a non-empty line (or a few), 
-    # taking the last 50 non-empty lines is a safe bet for context.
     limited_history = "\n".join(non_empty_lines[-50:])
     
     print(f"Learned history (last ~50 lines):")
@@ -268,9 +291,7 @@ def send_message(input_box_center, message: str):
         else:
             pyautogui.hotkey('ctrl', 'v')
 
-        time.sleep(0.3) # Wait for paste
-        pyautogui.press('enter')
-        time.sleep(0.3) # Wait to press enter again since the first one may not go through
+        time.sleep(0.5) # Wait for paste
         pyautogui.press('enter')
     except Exception as e:
         print(f"Failed to send message: {e}")
