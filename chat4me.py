@@ -42,6 +42,9 @@ Try to match the style and tone of the [Me] messages.
 # How often to check for new messages (in seconds)
 CHECK_INTERVAL = 30
 
+# How many screenshots to keep in memory
+HISTORY_LIMIT = 10
+
 def get_region_from_user(region_name):
     """
     Asks the user to define a region by moving the mouse to the top-left and bottom-right corners.
@@ -118,7 +121,7 @@ def has_screen_changed(img1, img2, threshold_percent=0.05):
     
     return percent_changed > threshold_percent
 
-def learn_conversation_history(chat_region, limit=10) -> list:
+def learn_conversation_history(chat_region, limit=HISTORY_LIMIT) -> list:
     """
     Scrolls up to learn the conversation history.
     And stitches screenshots into a single image saved in 'logs/'.
@@ -377,13 +380,15 @@ def main():
                     if not args.dry_run:
                         final_image = capture_screen_region(chat_region)
                         last_processed_image = final_image
-                        # We might want to update last_message_state here too, 
-                        # but "my" message will be at the bottom now.
-                        # So next loop, sender=='Me' check will catch it.
                     else:
                         last_processed_image = current_window_image
                         
                     last_message_state = analysis # Update this to the triggering message
+
+                    # 6. Update the learned history
+                    learned_history_images.append(current_window_image)
+                    if len(learned_history_images) > HISTORY_LIMIT:
+                        learned_history_images.pop(0)
 
                 else:
                     print("AI did not generate a reply.")
