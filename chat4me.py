@@ -2,10 +2,8 @@
 import time
 import os
 import pyautogui
-# import pytesseract # Removed dependency
 from PIL import Image, ImageChops, ImageStat
 import google.generativeai as genai
-import datetime
 import json
 
 # --- PRE-REQUISITES ---
