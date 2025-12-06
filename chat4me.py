@@ -122,7 +122,6 @@ def has_screen_changed(img1, img2, threshold_percent=0.05):
 def learn_conversation_history(chat_region, limit=HISTORY_LIMIT) -> list:
     """
     Scrolls up to learn the conversation history.
-    And stitches screenshots into a single image saved in 'logs/'.
     """
     print("Learning conversation history...")
     
