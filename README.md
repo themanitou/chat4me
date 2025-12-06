@@ -1,34 +1,26 @@
 # Chat4Me
 
-Chat4Me is an AI-powered chat automation tool that reads conversation history from your screen using OCR (Optical Character Recognition) and generates context-aware replies using Google's Gemini API. It is designed to work across different operating systems (Linux, Windows, macOS) by using manual coordinate selection and standard keyboard/mouse automation.
+Chat4Me is an AI-powered chat automation tool that reads conversation history from your screen using **Gemini's Multimodal Capabilities** (direct image analysis) and generates context-aware replies. It works across different operating systems (Linux, Windows, macOS) by using manual coordinate selection and standard keyboard/mouse automation.
 
 ## Features
 
--   **AI-Powered Replies**: Uses Google's `gemini-2.5-flash` model to generate relevant and conversational responses.
--   **Visual Context Awareness**: Reads the chat history directly from the screen, allowing it to work with any chat application.
--   **Multi-Language Support**: Configured to detect and read English, Vietnamese, and French text.
--   **Unicode Support**: correctly handles accented characters when typing replies.
--   **Manual Region Selection**: Prompts the user to define the chat window and input box, ensuring compatibility with various screen layouts and window managers.
--   **Robust Fail-Safe**: Move your mouse to the **top-left corner** of the screen at any time to instantly stop the program.
--   **Dry-Run Mode**: Test the OCR and AI generation without actually sending messages.
+-   **AI-Powered Replies**: Uses Google's `gemini-2.5-flash` model to look at your screen and generate relevant, smart, and funny responses.
+-   **True Multimodal Context**: Analyzes screenshots directly to understand context, layout, and identifying who is speaking based on visual cues (Right-aligned = Me).
+-   **Smart Trigger**: Detects new messages by analyzing the latest screenshot content and sender, filtering out your own messages and visual noise.
+-   **Unicode Support**: Correctly handles accented characters when typing replies via clipboard.
+-   **Manual Region Selection**: Prompts the user to define the chat window and input box, ensuring compatibility with any app.
+-   **Robust Fail-Safe**: Move your mouse to the **top-left corner (within 20x20 pixels)** of the screen to instantly stop the program.
+-   **Dry-Run Mode**: Test the visual analysis and AI generation without actually sending messages.
 
 ## Prerequisites
 
 1.  **Python 3.x**: Ensure you have Python installed.
-2.  **Tesseract OCR**: The tool uses Tesseract for text recognition. You need to install it along with the required language data.
-    *   **Ubuntu/Debian**:
-        ```bash
-        sudo apt-get install tesseract-ocr tesseract-ocr-vie tesseract-ocr-fra
-        ```
-    *   **macOS**:
-        ```bash
-        brew install tesseract-lang
-        ```
-    *   **Windows**: Download and install from [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki). Ensure you download the additional language data for Vietnamese and French.
+2.  **Google Gemini API Key**:
+    *   Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 3.  **Clipboard Tool (Linux only)**:
     *   `sudo apt-get install xclip` (Required for `pyperclip` to work on Linux).
-4.  **Google Gemini API Key**:
-    *   Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+4.  **Dependencies**:
+    *   The project uses `google-generativeai`, `Pillow`, `pyautogui`, and `pyperclip`.
 
 ## Installation
 
@@ -68,7 +60,7 @@ Chat4Me is an AI-powered chat automation tool that reads conversation history fr
     *   **Step 2**: Define the **Message Input Box Center**. Move your mouse to the center of the text input area and press Enter.
 
 4.  **Stop the Automation**:
-    *   Move your mouse cursor to the **Top-Left Corner** of the screen (0, 0) to trigger the fail-safe and exit.
+    *   Move your mouse cursor to the **Top-Left Corner** of the screen (x < 20, y < 20) to trigger the fail-safe and exit.
 
 ## License
 

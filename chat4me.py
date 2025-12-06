@@ -2,20 +2,16 @@
 import time
 import os
 import pyautogui
-import pytesseract
-from PIL import Image
+# import pytesseract # Removed dependency
+from PIL import Image, ImageChops, ImageStat
 import google.generativeai as genai
 import datetime
+import json
 
 # --- PRE-REQUISITES ---
-# 1. Install Tesseract OCR on your system:
-#    - Debian/Ubuntu: sudo apt-get install tesseract-ocr tesseract-ocr-vie tesseract-ocr-fra
-#    - macOS: brew install tesseract-lang
-#    - Windows: Download language data from https://github.com/tesseract-ocr/tessdata
-#    You may need to set the command path if it's not in your system's PATH:
-#    pytesseract.pytesseract.tesseract_cmd = r'/path/to/your/tesseract'
-
-# 2. Set up your Gemini API Key:
+# 1. Set up your Gemini API Key:
+#    - Get your key from Google AI Studio: https://aistudio.google.com/app/apikey
+#    - Set it as an environment variable named 'GEMINI_API_KEY'.
 #    - Get your key from Google AI Studio: https://aistudio.google.com/app/apikey
 #    - Set it as an environment variable named 'GEMINI_API_KEY'.
 #      - Linux/macOS: export GEMINI_API_KEY='Your-API-Key'
@@ -29,12 +25,17 @@ import datetime
 # --- CONFIGURATION ---
 # The prompt for the AI. You can customize this to change the AI's personality.
 SYSTEM_PROMPT = """
-You are an AI assistant integrated into a chat application. 
-Your job is to read the ongoing conversation and provide helpful, relevant, and engaging responses.
-Keep your replies concise and conversational.
-The user you are acting as is the one whose messages are marked with [Me].
-Other messages are from other participants and will usually be preceded by their username.
-Based on the provided chat history, generate the next message for the user ([Me]).
+You are an AI assistant integrated into a chat application.
+You will be provided with a series of screenshots showing the conversation history.
+The screenshots are ordered chronologically.
+Your job is to read the conversation from these images and provide helpful, relevant, and engaging responses.
+Be smart and funny.
+
+**Crucial Visual Cues:**
+- Messages that are **aligned to the RIGHT** side of the chat window are from **[Me] (the user)**.
+- Messages aligned to the LEFT are from other participants.
+
+Based on the visible chat history in the images, generate the next message for [Me].
 Try to match the style and tone of the [Me] messages.
 """
 
@@ -83,87 +84,41 @@ def capture_screen_region(region):
     """
     return pyautogui.screenshot(region=region)
 
-def extract_text_from_image(image: Image.Image) -> str:
+def has_screen_changed(img1, img2, threshold_percent=0.05):
     """
-    Uses Tesseract OCR to extract text from a PIL Image.
-    Distinguishes between [Me] (right-aligned) and other messages.
-    Supports English, Vietnamese, and French.
+    Checks if two screenshots are different by more than a certain percentage.
+    threshold_percent: 0.05 corresponds to 5% change.
     """
-    if image is None:
-        return ""
-    try:
-        # Use image_to_data to get bounding box information
-        # output_type=Output.DICT returns a dictionary of lists
-        from pytesseract import Output
-        data = pytesseract.image_to_data(image, output_type=Output.DICT, lang='eng+vie+fra')
-        
-        image_width = image.width
-        formatted_lines = []
-        
-        # Group words into lines based on 'line_num' and 'block_num' (or just line_num)
-        # But image_to_data returns words. We need to reconstruct lines.
-        # A simpler approach for alignment is to look at the 'left' of the first word of a line.
-        
-        current_line_text = []
-        current_line_left = -1
-        last_line_num = -1
-        
-        n_boxes = len(data['level'])
-        
-        for i in range(n_boxes):
-            text = data['text'][i].strip()
-            if not text:
-                continue
-                
-            line_num = data['line_num'][i]
-            left = data['left'][i]
-            
-            if line_num != last_line_num:
-                # New line started. Process the previous line.
-                if current_line_text:
-                    full_line = " ".join(current_line_text)
-                    # Determine alignment based on the start position (left)
-                    # If it starts past the middle, it's likely right-aligned (Me)
-                    # This is a heuristic. Right-aligned text usually starts > 50% width, 
-                    # but short messages might be tricky. 
-                    # However, standard chat bubbles for "Me" usually start on the right half.
-                    # Let's use a threshold of 40% to be safe, or check if it's closer to right edge.
-                    # Actually, "Me" messages are right aligned, so their *left* bound should be large.
-                    
-                    # A better heuristic might be:
-                    # If left > image_width * 0.4 -> [Me]
-                    # Else -> Raw text
-                    
-                    if current_line_left > (image_width * 0.4):
-                        formatted_lines.append(f"[Me]: {full_line}")
-                    else:
-                        formatted_lines.append(full_line)
-                
-                current_line_text = []
-                current_line_left = left
-                last_line_num = line_num
-            
-            current_line_text.append(text)
-            
-        # Process the last line
-        if current_line_text:
-            full_line = " ".join(current_line_text)
-            if current_line_left > (image_width * 0.4):
-                formatted_lines.append(f"[Me]: {full_line}")
-            else:
-                formatted_lines.append(full_line)
-            
-        return "\n".join(formatted_lines)
+    if img1 is None and img2 is None:
+        return False
+    if img1 is None or img2 is None:
+        return True
+    
+    # Ensure images are the same size
+    if img1.size != img2.size:
+        return True
 
-    except pytesseract.TesseractNotFoundError:
-        print("Error: Tesseract is not installed or not in your PATH.")
-        print("Please install Tesseract and try again.")
-        exit()
-    except Exception as e:
-        print(f"An error occurred during OCR: {e}")
-        return ""
+    # Calculate absolute difference
+    diff = ImageChops.difference(img1, img2).convert('L')
+    
+    # Create a binary mask: 0 for identical (or close), 255 for different
+    # We use a small pixel-level tolerance (e.g.,>15) to ignore compression artifacts/noise
+    # 'point' is efficient for pixel-wise mapping
+    mask = diff.point(lambda p: 255 if p > 15 else 0)
+    
+    # Calculate average pixel value of the mask (0 to 255)
+    stat = ImageStat.Stat(mask)
+    avg_diff = stat.mean[0] # List of means per channel (we have one L channel)
+    
+    # Percentage of changed pixels
+    percent_changed = avg_diff / 255.0
+    
+    # debug print (optional, can remove later)
+    # print(f"Screen diff: {percent_changed*100:.2f}%")
+    
+    return percent_changed > threshold_percent
 
-def learn_conversation_history(chat_region, limit=20) -> str:
+def learn_conversation_history(chat_region, limit=10) -> list:
     """
     Scrolls up to learn the conversation history.
     And stitches screenshots into a single image saved in 'logs/'.
@@ -181,68 +136,42 @@ def learn_conversation_history(chat_region, limit=20) -> str:
     pyautogui.click(bottom_right_x, bottom_right_y)
     time.sleep(0.5)
 
-    history_pages_text = []
     history_pages_images = []
     
     # Using scroll(h) is more reliable than PageUp on some systems.
     # We scroll multiple times to capture enough history.
     # The loop runs 10 times to gather a good amount of context.
     
-    for _ in range(10):
+    for _ in range(limit):
         pyautogui.scroll(h)
         time.sleep(0.5) # Wait for scroll animation
         screenshot = capture_screen_region(chat_region)
-        
-        # Save text
-        text = extract_text_from_image(screenshot)
-        history_pages_text.append(text)
-        
-        # Save image object
         history_pages_images.append(screenshot)
+
+    # Scroll back to the bottom
+    for _ in range(limit + 2):
+        pyautogui.scroll(-h)
+        time.sleep(0.5) # Wait for scroll animation
         
-    # Scroll back to bottom
-    pyautogui.press('end')
-    time.sleep(0.5)
-    
-    # --- Stitch Images ---
+    # --- Save Individual Images ---
+    # Convert captured history_pages_images (Newest -> Oldest) to (Oldest -> Newest) for correct context
+    ordered_images = []
     if history_pages_images:
-        # The first element in history_pages_images was captured after 1 scroll up.
-        # The last element was captured after 10 scrolls up (oldest).
-        # We want the final image to be from Top (Oldest) to Bottom (Newest).
-        # So we reverse the list.
         ordered_images = list(reversed(history_pages_images))
         
-        total_height = sum(img.height for img in ordered_images)
-        max_width = max(img.width for img in ordered_images)
-        
-        stitched_image = Image.new('RGB', (max_width, total_height))
-        
-        y_offset = 0
-        for img in ordered_images:
-            stitched_image.paste(img, (0, y_offset))
-            y_offset += img.height
-            
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"logs/history_{timestamp}.png"
-        stitched_image.save(filename)
-        print(f"Saved stitched history to {filename}")
+        for i, img in enumerate(ordered_images):
+            # Save as screen_xx.png
+            filename = f"logs/screen_{i:02d}.png"
+            img.save(filename)
+            print(f"Saved screenshot to {filename}")
 
-    # --- Process Text ---
-    full_history = "\n".join(reversed(history_pages_text))
+    # No more text processing
     
-    lines = full_history.split('\n')
-    non_empty_lines = [line for line in lines if line.strip()]
-    limited_history = "\n".join(non_empty_lines[-50:])
-    
-    print(f"Learned history (last ~50 lines):")
-    print(limited_history)
-    print("--------------------------------------------------")
-    
-    return limited_history
+    return ordered_images
 
-def generate_reply(conversation_history: str, learned_history: str = "") -> str:
+def generate_reply(history_images: list, current_screenshot) -> str:
     """
-    Sends the conversation history to the Gemini API and gets a reply.
+    Sends the conversation history (images) to the Gemini API and gets a reply.
     """
     try:
         api_key = os.getenv("GEMINI_API_KEY")
@@ -252,16 +181,73 @@ def generate_reply(conversation_history: str, learned_history: str = "") -> str:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
         
-        # Combine learned history with current visible history
-        full_context = f"{learned_history}\n\n[...]\n\n{conversation_history}"
+        # Determine strict chronological order:
+        # history_images contains [oldest, ..., newest-1]
+        # current_screenshot is [newest]
+        # We want to provide them in order.
         
-        full_prompt = f"{SYSTEM_PROMPT}\n\nChat History:\n---\n{full_context}\n---\nYour Reply:"
+        content_parts = [SYSTEM_PROMPT]
         
-        response = model.generate_content(full_prompt)
+        # Add history images with context labels if possible, or just sequence them
+        for i, img in enumerate(history_images):
+            content_parts.append(f"Screenshot History Part {i+1}:")
+            content_parts.append(img)
+            
+        content_parts.append("Current Chat View (Latest):")
+        content_parts.append(current_screenshot)
+        
+        content_parts.append("Based on the above screenshots, what should [Me] reply?")
+        
+        response = model.generate_content(content_parts)
         return response.text.strip()
     except Exception as e:
         print(f"Error generating reply from AI: {e}")
         return ""
+
+def analyze_latest_message(image: Image.Image) -> dict:
+    """
+    Uses Gemini to analyze the latest message in the screenshot.
+    Returns a dict with: {'sender': 'Me'|'Other', 'content': str, 'timestamp': str}
+    """
+    if image is None:
+        return {}
+    
+    try:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return {}
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        
+        prompt = """
+        Analyze this chat screenshot. Focus on the very last (bottom-most) message.
+        Return a JSON object with the following keys:
+        1. "sender": "Me" if the message is aligned to the right, or "Other" if aligned to the left.
+        2. "content": A short summary or the first few words of the message text.
+        3. "timestamp": The timestamp string if visible near the message, or "Unknown".
+        
+        Example outputs:
+        {"sender": "Me", "content": "Hello there", "timestamp": "10:30 AM"}
+        {"sender": "Other", "content": "How are you?", "timestamp": "10:31 AM"}
+        
+        Return ONLY valid JSON.
+        """
+        
+        response = model.generate_content([prompt, image])
+        text = response.text.strip()
+        
+        # Clean up code blocks if present
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+            
+        return json.loads(text)
+    except Exception as e:
+        print(f"Error analyzing latest message: {e}")
+        return {}
 
 import pyperclip
 
@@ -322,36 +308,64 @@ def main():
         time.sleep(5)
         
         # Learn history before starting the loop
-        learned_history = learn_conversation_history(chat_region)
+        learned_history_images = learn_conversation_history(chat_region)
         
-        last_processed_text = ""
+        last_processed_image = None
+        last_message_state = {} # {'sender': '', 'content': '', 'timestamp': ''}
         
         while True:
             # Explicit fail-safe check
-            if pyautogui.position() == (0, 0):
+            if pyautogui.position().x < 20 and pyautogui.position().y < 20:
                 raise pyautogui.FailSafeException("Manual fail-safe trigger")
 
             print("\nChecking for new messages...")
             
             # 1. Capture and read the current chat content
-            window_image = capture_screen_region(chat_region)
-            current_text = extract_text_from_image(window_image)
-
-            if not current_text.strip():
-                print("No text detected in the window.")
-                time.sleep(CHECK_INTERVAL)
-                continue
+            current_window_image = capture_screen_region(chat_region)
             
-            # 2. Check if there are new messages
-            if current_text != last_processed_text and last_processed_text in current_text:
-                print("New message detected!")
+            # 2. Check if screen has changed (Pixel Pre-check)
+            has_visual_change = has_screen_changed(current_window_image, last_processed_image)
+            
+            if last_processed_image is None:
+                 print("Initial run: analyzing current state...")
+                 has_visual_change = True # Force analysis on first run
+            
+            if has_visual_change:
+                print("Screen visual change (or initial run) detected. Analyzing with Gemini...")
                 
-                # 3. Generate a reply
+                # 3. Analyze the latest message
+                analysis = analyze_latest_message(current_window_image)
+                print(f"Analysis Result: {analysis}")
+                
+                sender = analysis.get('sender', 'Unknown')
+                content = analysis.get('content', '')
+                
+                # Check 1: Is the sender Me?
+                if sender == 'Me':
+                    print("Last message is from [Me]. Ignoring.")
+                    last_processed_image = current_window_image
+                    last_message_state = analysis
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+                    
+                # Check 2: Is it the same message as before? (Duplicate check)
+                prev_content = last_message_state.get('content', '')
+                if content == prev_content and content != "":
+                     print("Message content appears identical to last processed. Ignoring.")
+                     last_processed_image = current_window_image
+                     # Don't update last_message_state if it's the same, or do? 
+                     # If it's the same, we just wait.
+                     time.sleep(CHECK_INTERVAL)
+                     continue
+
+                print("New message from 'Other' confirmed!")
+                
+                # 4. Generate a reply
                 print("Generating reply...")
-                reply = generate_reply(current_text, learned_history)
+                reply = generate_reply(learned_history_images, current_window_image)
                 
                 if reply:
-                    # 4. Send the reply (or print if dry-run)
+                    # 5. Send the reply (or print if dry-run)
                     if args.dry_run:
                         print(f"\n[DRY RUN] Generated Reply: {reply}\n")
                     else:
@@ -359,25 +373,26 @@ def main():
                         # Give time for the message to send and appear
                         time.sleep(3)
                     
-                    # Update the baseline text
+                    # Update the baseline
                     if not args.dry_run:
                         final_image = capture_screen_region(chat_region)
-                        last_processed_text = extract_text_from_image(final_image)
+                        last_processed_image = final_image
+                        # We might want to update last_message_state here too, 
+                        # but "my" message will be at the bottom now.
+                        # So next loop, sender=='Me' check will catch it.
                     else:
-                        last_processed_text = current_text
+                        last_processed_image = current_window_image
+                        
+                    last_message_state = analysis # Update this to the triggering message
 
                 else:
                     print("AI did not generate a reply.")
-                    last_processed_text = current_text # Update to avoid re-processing
-
-            elif current_text != last_processed_text:
-                # The chat content has changed, but not in an append-only way
-                # (e.g., scroll, new day, someone edited/deleted a message)
-                print("Chat history seems to have changed or scrolled. Resetting baseline.")
-                last_processed_text = current_text
+                    last_processed_image = current_window_image
+                    last_message_state = analysis
 
             else:
-                print("No new messages.")
+                print("No visual change detected.")
+
 
             # Wait before the next check
             time.sleep(CHECK_INTERVAL)
